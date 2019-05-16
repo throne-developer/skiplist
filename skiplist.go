@@ -27,7 +27,7 @@
 // Skiplist is a fast alternative to a balanced tree.
 
 // Improvement on the basis of https://github.com/MauriceGit/skiplist project，Using REDIS-ZSET mode to operate skiplist
-// I am a Chinese programmer，So the code comment is in Chinese.
+
 package skiplist
 
 import (
@@ -42,76 +42,85 @@ import (
 )
 
 const (
-	MAX_LEVEL = 25
-	EPS       = 0.00001
+	MaxLevel     = 25
+	Eps          = 0.00001
+	HeadNodeName = "-inf-"
+	TailNodeName = "+inf+"
 )
 
-var debug = false
+/* Example data:
+Lv4  -inf
+Lv3  -inf     B
+Lv2  -inf     B           F
+Lv1  -inf  A  B  C  D  E  F  G  H  +inf
 
-func OpenDebugMode() {
-	debug = true
-}
+Each node points to the next node of the same layer or lower layer, such as:
+B.next[0] = C
+B.next[1] = F
+B.next[2] = +inf
 
-func CloseDebugMode() {
-	debug = false
-}
+B.span[0] = 1
+B.span[1] = 4
 
-/* 
-
-跳跃表结构，每个结点指向同一层或下层的next结点，比如 B.next->F、C、C， C.next->F、D
-prev指向第一层的前置结点，比如 B.prev->A，D.prev->C
-
-3层     B           F
-2层     B  C        F
-1层  A  B  C  D  E  F  G  H
+Prev points to the front node of the first layer, such as:
+B.prev = A
+A.prev = -inf
++inf.prev = H
 */
-type SkipListElement struct {
-	next  [MAX_LEVEL]*SkipListElement /*指向同一层或下层的next结点*/
-	prev  *SkipListElement            /*第一层的prev结点*/
-	name  string                      /*名称*/
-	score float64                     /*分值*/
-	level int                         /*结点占据层数*/
+type Element struct {
+	next  [MaxLevel]*Element /*points to the next node of the same layer or lower layer*/
+	span  [MaxLevel]int32    /*distance to next node*/
+	prev  *Element
+	name  string
+	score float64
 }
 
-func (e *SkipListElement) Name() string {
+func (e *Element) Name() string {
 	return e.name
 }
 
-func (e *SkipListElement) Score() float64 {
+func (e *Element) Score() float64 {
 	return e.score
 }
 
-func (e *SkipListElement) Next() *SkipListElement {
+func (e *Element) Next() *Element {
+	if e.next[0] != nil && e.next[0].name == TailNodeName {
+		return nil
+	}
 	return e.next[0]
 }
 
-func (e *SkipListElement) Prev() *SkipListElement {
+func (e *Element) Prev() *Element {
+	if e.prev != nil && e.prev.name == HeadNodeName {
+		return nil
+	}
 	return e.prev
 }
 
-func (e *SkipListElement) less(score float64, name string) bool { /*先比较score，再比较name*/
-	if math.Abs(e.score-score) > EPS {
+/*compare score first, then name*/
+func (e *Element) Less(score float64, name string) bool {
+	if math.Abs(e.score-score) > Eps {
 		return e.score < score
 	}
 	return e.name < name
 }
 
-func (e *SkipListElement) equal(score float64, name string) bool {
-	return math.Abs(e.score-score) <= EPS && e.name == name
+func (e *Element) Equal(score float64, name string) bool {
+	return math.Abs(e.score-score) <= Eps && e.name == name
 }
 
-func (e *SkipListElement) greater(score float64, name string) bool {
-	if math.Abs(e.score-score) > EPS {
+func (e *Element) Greater(score float64, name string) bool {
+	if math.Abs(e.score-score) > Eps {
 		return e.score > score
 	}
 	return e.name > name
 }
 
 type SkipList struct {
-	startLevels [MAX_LEVEL]*SkipListElement /*指向每一层的起始结点*/
-	endLevels   [MAX_LEVEL]*SkipListElement /*指向每一层的最后结点*/
-	maxLevel    int                         /*当前最大层数*/
-	elements    map[string]float64          /*每个结点的分值*/
+	headNode *Element
+	tailNode *Element
+	maxLevel int
+	elements map[string]float64
 }
 
 func New() *SkipList {
@@ -120,228 +129,176 @@ func New() *SkipList {
 
 func NewSeed(seed int64) *SkipList {
 	rand.Seed(seed)
+
+	headNode := &Element{
+		next:  [MaxLevel]*Element{},
+		span:  [MaxLevel]int32{},
+		prev:  nil,
+		name:  HeadNodeName,
+		score: math.Inf(-1),
+	}
+
+	tailNode := &Element{
+		next:  [MaxLevel]*Element{},
+		span:  [MaxLevel]int32{},
+		prev:  nil,
+		name:  TailNodeName,
+		score: math.Inf(1),
+	}
+
+	/*The height of the headNode layer is MaxLevel, and each layer points to tailNode.
+	The height of the tailNode layer is 1. */
+	for i := MaxLevel - 1; i >= 0; i-- {
+		headNode.next[i] = tailNode
+		headNode.span[i] = 1
+	}
+	tailNode.prev = headNode
+
 	return &SkipList{
-		startLevels: [MAX_LEVEL]*SkipListElement{},
-		endLevels:   [MAX_LEVEL]*SkipListElement{},
-		elements:    make(map[string]float64),
+		headNode: headNode,
+		tailNode: tailNode,
+		maxLevel: 0,
+		elements: make(map[string]float64),
 	}
 }
 
 func (t *SkipList) Insert(name string, score float64) {
-	t.Delete(name) /*删除旧结点*/
+	if name == HeadNodeName || name == TailNodeName {
+		return
+	}
 
-	elemLevel := generateLevel() /*获取随机层数*/
-	if elemLevel > t.maxLevel {  /*最大层数+1*/
+	if currScore, ok := t.elements[name]; ok {
+		if equalFloat(currScore, score) { /*no change*/
+			return
+		} else {
+			t.Delete(name) /*delete old node*/
+		}
+	}
+
+	elemLevel := generateLevel() /*Number of new node layers*/
+	if elemLevel > t.maxLevel {
 		elemLevel = t.maxLevel + 1
 		t.maxLevel = elemLevel
 	}
 
-	t.elements[name] = score
-	elem := &SkipListElement{
-		next:  [MAX_LEVEL]*SkipListElement{},
+	elem := &Element{
+		next:  [MaxLevel]*Element{},
+		span:  [MaxLevel]int32{},
+		prev:  nil,
 		name:  name,
 		score: score,
-		level: elemLevel,
 	}
+	t.elements[name] = score
 
-	/*是否最小，最大，中间元素，默认为首次插入*/
-	isMin, isMax, isMid := true, true, false
-	if !t.IsEmpty() {
-		isMin = elem.less(t.startLevels[0].score, t.startLevels[0].name)
-		isMax = elem.greater(t.endLevels[0].score, t.endLevels[0].name)
-	}
+	var (
+		index    = t.maxLevel
+		currNode = t.headNode
 
-	if !isMin && !isMax { /*中间插入*/
+		prevs = [MaxLevel]struct {
+			node *Element
+			rank int32
+		}{}
+	)
 
-		/*获取level层索引，或者>level层的 首结点<=新结点的 层索引*/
-		index := t.findStartLevel(elem.score, elem.name, elemLevel)
-		isMid = true
-		var currNode, nextNode *SkipListElement
-		var iters int
+	for {
+		nextNode := currNode.next[index]
 
-		for {
-			iters++
-			if currNode == nil {
-				nextNode = t.startLevels[index]
-			} else {
-				nextNode = currNode.next[index]
-			}
+		if !nextNode.Less(elem.score, elem.name) {
+			prevs[index].node = currNode
 
-			/*在层数范围内，每层需要插入一个新结点； 插入第一个大于新结点的结点前面，若没有，插入层尾*/
-			if index <= elemLevel && (nextNode == nil || nextNode.greater(elem.score, elem.name)) {
-				elem.next[index] = nextNode /*在 currNode 和 nextNode 中间插入*/
-				if currNode != nil {
-					currNode.next[index] = elem
-				}
+			/*Within the elemLevel layer range, a new node needs to be inserted into each layer*/
+			if index <= elemLevel {
+				elem.next[index] = nextNode
+				currNode.next[index] = elem
 
-				if index == 0 { /*在第一层时，处理prev指针*/
+				if index == 0 { /*In the first layer, update prev*/
 					elem.prev = currNode
 					nextNode.prev = elem
 				}
 			}
+		}
 
-			/*优先向本层右侧扫描，搜索本层最后一个小于新结点的结点，作为currNode；
-			否则下降一层，继续向右侧扫描，currNode可以保持不变*/
-			if nextNode != nil && nextNode.less(elem.score, elem.name) {
-				currNode = nextNode
+		if nextNode.Less(elem.score, elem.name) { /*Search right or down*/
+			prevs[index].rank += currNode.span[index] /*Accumulate span as node rank*/
+			currNode = nextNode
+
+		} else {
+			if index--; index < 0 {
+				break
 			} else {
-				if index--; index < 0 {
-					break
-				}
+				prevs[index].rank = prevs[index+1].rank
 			}
-		}
-
-		if debug {
-			fmt.Println("Insert Iteration times ", iters)
 		}
 	}
 
-	for i := elemLevel; i >= 0; i-- { /*处理层首和层尾*/
-		/*最小元素必为第一层的层首，中间元素在顶部某些层也可为层首*/
-		if isMin || isMid {
-			/*层首为空，或层首大于新结点，需要将新结点作为层首*/
-			if t.startLevels[i] == nil || t.startLevels[i].greater(elem.score, elem.name) {
-				if i == 0 && t.startLevels[i] != nil { /*第一层时，更新prev*/
-					t.startLevels[i].prev = elem
-				}
-
-				elem.next[i] = t.startLevels[i]
-				t.startLevels[i] = elem
-			}
-
-			if elem.next[i] == nil { /*也可以为层尾*/
-				t.endLevels[i] = elem
-			}
-		}
-
-		if isMax {
-			if !isMin { /*避免将第一个元素（同时满足isMax和isMin）链接到自身*/
-				if t.endLevels[i] != nil {
-					t.endLevels[i].next[i] = elem
-				}
-				if i == 0 {
-					elem.prev = t.endLevels[i]
-				}
-				t.endLevels[i] = elem
-			}
-
-			/*最大元素，也有可能是层首*/
-			if t.startLevels[i] == nil || t.startLevels[i].greater(elem.score, elem.name) {
-				t.startLevels[i] = elem
-			}
-		}
+	/*Update the node span, according to the rank and span of the pre-node and the rank of the new node*/
+	elemRank := prevs[0].rank + 1
+	for i := 0; i <= t.maxLevel; i++ {
+		elem.span[i] = prevs[i].rank + prevs[i].node.span[i] - elemRank
+		prevs[i].node.span[i] = elemRank - prevs[i].rank
 	}
 }
 
-/*返回level层索引，或者>level层的 首结点<=新结点的 层索引*/
-func (t *SkipList) findStartLevel(score float64, name string, level int) int {
-	for i := t.maxLevel; i >= 0; i-- {
-		if i <= level {
-			return i
-		}
-		if t.startLevels[i] != nil && !t.startLevels[i].greater(score, name) {
-			return i
-		}
-	}
-	return 0
-}
-
-func (t *SkipList) Find(name string) (foundItem *SkipListElement) {
+func (t *SkipList) Find(name string) (foundItem *Element) {
 	score, ok := t.elements[name]
 	if !ok {
 		return
 	}
 
-	index := t.findStartLevel(score, name, 0) /*从上到下，获取第一个 首结点<=新结点的 层索引*/
-	var currNode, nextNode *SkipListElement
-	var iterNodes []string
+	currNode := t.headNode
 
-	for {
-		if currNode == nil {
-			nextNode = t.startLevels[index]
-		} else {
-			nextNode = currNode.next[index]
+	for i := t.maxLevel; i >= 0; i-- {
+
+		nextNode := currNode.next[i]
+		for nextNode.Less(score, name) {
+			currNode = nextNode
+			nextNode = nextNode.next[i]
 		}
 
-		if debug {
-			if nextNode != nil {
-				iterNodes = append(iterNodes, nextNode.name)
-			}
-		}
-
-		if nextNode != nil && nextNode.equal(score, name) { /*找到目标*/
+		if nextNode.Equal(score, name) {
 			foundItem = nextNode
 			break
 		}
-
-		if nextNode != nil && nextNode.less(score, name) {
-			currNode = nextNode
-		} else {
-			if index--; index < 0 {
-				break
-			}
-		}
-	}
-
-	if debug {
-		fmt.Println("Find Iteration times ", len(iterNodes), ", path: "+strings.Join(iterNodes, ", "))
 	}
 	return
 }
 
-func (t *SkipList) FindGreaterOrEqual(score float64) (foundItem *SkipListElement) {
+func (t *SkipList) FindGreaterOrEqual(score float64) (foundItem *Element) {
 	if t.IsEmpty() {
 		return
 	}
-	if lessThan(score, t.startLevels[0].score) || equalFloat(score, t.startLevels[0].score) {
-		foundItem = t.startLevels[0] /*score<=最小分值，直接返回最小结点*/
+
+	/*Score <= minimum score, return the minimum node*/
+	if first := t.headNode.next[0]; !greaterThan(score, first.score) {
+		foundItem = first
 		return
 	}
-	if greaterThan(score, t.endLevels[0].score) {
-		return /*score>最大分值，返回nil*/
+
+	/*Score > maximum score, return nil*/
+	if last := t.tailNode.prev; greaterThan(score, last.score) {
+		return
 	}
 
-	index := 0
-	for i := t.maxLevel; i >= 0; i-- { /*从上到下，获取第一个 首结点分值<score 的层索引*/
-		if lessThan(t.startLevels[i].score, score) {
-			index = i
-			break
-		}
-	}
+	currNode := t.headNode
 
-	var currNode, nextNode *SkipListElement
-	var iters int
+	for i := t.maxLevel; i >= 0; i-- {
 
-	for {
-		iters++
-		if currNode == nil {
-			nextNode = t.startLevels[index]
-		} else {
-			nextNode = currNode.next[index]
+		nextNode := currNode.next[i]
+		for lessThan(nextNode.score, score) {
+
+			currNode = nextNode
+			nextNode = nextNode.next[i]
 		}
 
-		if index == 0 { /*进入第一层，从currNode向右搜索第一个 >=score的结点*/
-			for node := currNode; node != nil; {
-				if equalFloat(node.score, score) || greaterThan(node.score, score) {
-					foundItem = node
+		/*Go to the first level, search for the first >= score node from currNode*/
+		if i == 0 {
+			for curr := currNode; curr != t.tailNode; curr = curr.next[0] {
+				if !lessThan(curr.score, score) {
+					foundItem = curr
 					break
 				}
-				node = node.next[0]
-			}
-			break
-		}
-
-		if nextNode != nil && lessThan(nextNode.score, score) {
-			currNode = nextNode
-		} else {
-			if index--; index < 0 {
-				break
 			}
 		}
-	}
-
-	if debug {
-		fmt.Println("FindGreaterOrEqual Iteration times ", iters)
 	}
 	return
 }
@@ -352,92 +309,134 @@ func (t *SkipList) Delete(name string) {
 		return
 	}
 
-	index := t.findStartLevel(score, name, 0)
-	var currNode, nextNode *SkipListElement
-	var iters int
+	currNode := t.headNode
 
-	for {
-		iters++
-		if currNode == nil {
-			nextNode = t.startLevels[index]
-		} else {
-			nextNode = currNode.next[index]
+	for i := t.maxLevel; i >= 0; i-- {
+
+		nextNode := currNode.next[i]
+		for nextNode.Less(score, name) {
+
+			currNode = nextNode
+			nextNode = nextNode.next[i]
 		}
 
-		if nextNode != nil && nextNode.equal(score, name) { /*删除node*/
+		if nextNode.Equal(score, name) { /*delete node*/
 			delNode := nextNode
-			if currNode != nil {
-				currNode.next[index] = delNode.next[index]
-			}
+			currNode.next[i] = delNode.next[i]
 
-			if index == 0 { /*处理第1层*/
-				if delNode.next[index] != nil {
-					delNode.next[index].prev = currNode
-				}
+			if i == 0 {
+				delNode.next[i].prev = currNode
 				delete(t.elements, name)
 			}
 
-			if t.startLevels[index] == delNode { /*更新层首*/
-				t.startLevels[index] = delNode.next[index]
-
-				if t.startLevels[index] == nil { /*层数-1*/
-					t.maxLevel = index - 1
-				}
+			if t.headNode.next[i] == t.tailNode && i > 0 { /*empty layer*/
+				t.maxLevel = i - 1
 			}
+		}
+	}
+}
 
-			if delNode.next[index] == nil { /*更新层尾*/
-				t.endLevels[index] = currNode
-			}
-			delNode.next[index] = nil
+func (t *SkipList) GetRank(name string) (rank int, exist bool) {
+	score, ok := t.elements[name]
+	if !ok {
+		return
+	}
+
+	currNode := t.headNode
+	var elemRank int32
+
+	for i := t.maxLevel; i >= 0; i-- {
+
+		nextNode := currNode.next[i]
+		for nextNode.Less(score, name) {
+			elemRank += currNode.span[i]
+
+			currNode = nextNode
+			nextNode = nextNode.next[i]
 		}
 
-		if nextNode != nil && nextNode.less(score, name) {
-			currNode = nextNode
-		} else {
-			if index--; index < 0 {
+		if nextNode.Equal(score, name) {
+			rank = int(elemRank + currNode.span[i])
+			exist = true
+			break
+		}
+	}
+	return
+}
+
+func (t *SkipList) FindByRank(rank int) (foundItem *Element) {
+	if rank < 1 || rank > len(t.elements) {
+		return nil
+	}
+
+	currNode := t.headNode
+	var elemRank int32
+
+	for i := t.maxLevel; i >= 0; i-- {
+
+		for currNode.next[i] != t.tailNode {
+
+			if nextRank := elemRank + currNode.span[i]; int(nextRank) <= rank {
+				elemRank = nextRank
+				currNode = currNode.next[i]
+			} else {
 				break
 			}
 		}
-	}
 
-	if debug {
-		fmt.Println("Delete Iteration times ", iters)
+		if int(elemRank) == rank {
+			foundItem = currNode
+			break
+		}
 	}
+	return
 }
 
 func (t *SkipList) IsEmpty() bool {
-	return t.startLevels[0] == nil
+	return t.headNode.next[0] == t.tailNode
 }
 
-func (t *SkipList) GetSmallestNode() *SkipListElement {
-	return t.startLevels[0]
+func (t *SkipList) GetSmallestNode() *Element {
+	if !t.IsEmpty() {
+		return t.headNode.next[0]
+	}
+	return nil
 }
 
-func (t *SkipList) GetLargestNode() *SkipListElement {
-	return t.endLevels[0]
+func (t *SkipList) GetLargestNode() *Element {
+	if !t.IsEmpty() {
+		return t.tailNode.prev
+	}
+	return nil
 }
 
 func (t *SkipList) GetNodeCount() int {
 	return len(t.elements)
 }
 
+func (t *SkipList) GetScore(name string) (float64, bool) {
+	score, ok := t.elements[name]
+	return score, ok
+}
+
 func (t *SkipList) PrintNodes() string {
-	levels := make([]string, 0, MAX_LEVEL)
+	levels := make([]string, 0, MaxLevel)
 	var buff bytes.Buffer
 
 	for i := t.maxLevel; i >= 0; i-- {
 		buff.Reset()
 		buff.WriteString("[" + strconv.Itoa(i) + "] ")
 
-		currNode := t.startLevels[i]
-		for currNode != nil {
-			buff.WriteString(currNode.name)
-			buff.WriteString(" -> ")
+		for node := t.headNode; node != nil; node = node.next[i] {
+			span := node.span[i]
+			if node.next[i] == t.tailNode {
+				span = 0
+			}
 
-			currNode = currNode.next[i]
+			buff.WriteString(node.name)
+			buff.WriteString(fmt.Sprintf(" -(%d)> ", span))
 		}
 
-		buff.WriteString("(" + t.endLevels[i].name + ")")
 		levels = append(levels, buff.String())
 	}
 
@@ -445,16 +444,13 @@ func (t *SkipList) PrintNodes() string {
 }
 
 func (t *SkipList) PrintLevels() string {
-	levels := make([]string, 0, MAX_LEVEL)
+	levels := make([]string, 0, MaxLevel)
 	wholeCount := 0
 
 	for i := t.maxLevel; i >= 0; i-- {
 		count := 0
-
-		currNode := t.startLevels[i]
-		for currNode != nil {
+		for node := t.headNode.next[i]; node != t.tailNode; node = node.next[i] {
 			count++
-			currNode = currNode.next[i]
 		}
 
 		levels = append(levels, fmt.Sprintf("[%02d] %d", i, count))
@@ -465,25 +461,26 @@ func (t *SkipList) PrintLevels() string {
 	return strings.Join(levels, "\n")
 }
 
-func generateLevel() int { /*返回随机层数*/
-	var x uint64 = rand.Uint64() & ((1 << uint(MAX_LEVEL-1)) - 1) /*随机值x，bit位数<=MAX_LEVEL*/
-	zeroes := bits.TrailingZeros64(x)                             /*从尾部开始，bit位为0的个数*/
+/*Return random layers*/
+func generateLevel() int {
+	var x uint64 = rand.Uint64() & ((1 << uint(MaxLevel-1)) - 1) /*Random value x, bit number < MAX_LEVEL*/
+	zeroes := bits.TrailingZeros64(x)                            /*Starting from the tail, the number of bits 0*/
 
-	level := MAX_LEVEL - 1
-	if zeroes < MAX_LEVEL {
+	level := MaxLevel - 1
+	if zeroes < MaxLevel {
 		level = zeroes
 	}
 	return level
 }
 
 func greaterThan(a, b float64) bool {
-	return a > b && math.Abs(a-b) > EPS
+	return a > b && math.Abs(a-b) > Eps
 }
 
 func lessThan(a, b float64) bool {
-	return a < b && math.Abs(a-b) > EPS
+	return a < b && math.Abs(a-b) > Eps
 }
 
 func equalFloat(a, b float64) bool {
-	return math.Abs(a-b) <= EPS
+	return math.Abs(a-b) <= Eps
 }

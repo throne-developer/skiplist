@@ -2,7 +2,6 @@ package skiplist
 
 import (
 	"fmt"
-	"math/rand"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,11 +19,23 @@ func TestSkipListSimple(t *testing.T) {
 	sl.Insert("D3", 6)
 
 	if elem := sl.Find("D1"); elem != nil {
-		fmt.Println("Find D1 score=", elem.Score())
+		fmt.Println("Find D1, score=", elem.Score())
 	}
 
-	if elem := sl.FindGreaterOrEqual(3); elem != nil {
-		fmt.Println("FindGreaterOrEqual 3 name=", elem.Name())
+	if rank, ok := sl.GetRank("D1"); ok {
+		fmt.Println("D1 rank is ", rank)
+	}
+
+	if score, ok := sl.GetScore("D1"); ok {
+		fmt.Println("D1 score is ", score)
+	}
+
+	if elem := sl.FindByRank(5); elem != nil {
+		fmt.Println("FindByRank 5, name=", elem.Name())
+	}
+
+	for elem := sl.FindGreaterOrEqual(3); elem != nil; elem = elem.Next() {
+		fmt.Println("FindGreaterOrEqual 3, name=", elem.Name())
 	}
 
 	sl.Delete("A")
@@ -61,7 +72,6 @@ func TestSkipList(t *testing.T) {
 	fmt.Println("recovery " + name)
 	fmt.Println(sl.PrintNodes())
 
-	OpenDebugMode()
 	for _, name := range []string{"a10", "a61", "a63", "a64", "a81", "a90", "a11"} {
 		if elem := sl.Find(name); elem != nil {
 			fmt.Println("Find "+name+" score=", elem.score)
@@ -69,7 +79,6 @@ func TestSkipList(t *testing.T) {
 			fmt.Println("Find " + name + " failed")
 		}
 	}
-	CloseDebugMode()
 
 	for _, score := range []float64{0, 1, 5, 9, 10} {
 		results := make([]string, 0)
@@ -86,13 +95,13 @@ func TestSkipList(t *testing.T) {
 	names := []string{"a10", "a61", "a63", "a64", "a81", "a90", "a11", "a62"}
 	for _, name := range names {
 		sl.Delete(name)
-		fmt.Println("delete", name)
-		fmt.Println(sl.PrintNodes())
 	}
-
+	fmt.Println(sl.PrintNodes())
 }
 
 func TestSkipBench(t *testing.T) {
+	return
+
 	sl := New()
 	N := 100 * 10000
 
@@ -125,14 +134,7 @@ func TestSkipBench(t *testing.T) {
 	/*FindGreaterOrEqual*/
 	st = time.Now()
 	for _, score := range datas {
-		if rand.Intn(100000) == 1 {
-			OpenDebugMode()
-			sl.FindGreaterOrEqual(score)
-			CloseDebugMode()
-
-		} else {
-			sl.FindGreaterOrEqual(score)
-		}
+		sl.FindGreaterOrEqual(score)
 	}
 	dur = time.Since(st)
 	fmt.Println("FindGreaterOrEqual use "+dur.String()+", average ", dur.Seconds()*1000/float64(N), "ms")
