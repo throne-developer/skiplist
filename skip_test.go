@@ -2,46 +2,76 @@ package skiplist
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestSkipListSimple(t *testing.T) {
-	sl := New()
-
-	sl.Insert("A", 1)
-	sl.Insert("B", 2)
-	sl.Insert("C", 3)
-	sl.Insert("D1", 6)
-	sl.Insert("D2", 6)
-	sl.Insert("D3", 6)
-
-	if elem := sl.Find("D1"); elem != nil {
-		fmt.Println("Find D1, score=", elem.Score())
+func TestSkipList1(t *testing.T) {
+	data := make(map[string]float64)
+	for i := 1; i <= 1000; i++ {
+		data[fmt.Sprintf("v_%d", i)] = float64(i)
 	}
 
-	if rank, ok := sl.GetRank("D1"); ok {
-		fmt.Println("D1 rank is ", rank)
+	for i := 1; i <= 100; i++ {
+		if msg := checkSkiplist(data); msg != "" {
+			fmt.Println("TestSkipList1 checkSkiplist err: " + msg)
+		}
 	}
-
-	if score, ok := sl.GetScore("D1"); ok {
-		fmt.Println("D1 score is ", score)
-	}
-
-	if elem := sl.FindByRank(5); elem != nil {
-		fmt.Println("FindByRank 5, name=", elem.Name())
-	}
-
-	for elem := sl.FindGreaterOrEqual(3); elem != nil; elem = elem.Next() {
-		fmt.Println("FindGreaterOrEqual 3, name=", elem.Name())
-	}
-
-	sl.Delete("A")
+	fmt.Println("TestSkipList1 success")
 }
 
-func TestSkipList(t *testing.T) {
+func checkSkiplist(data map[string]float64) string {
+	slist := New()
+
+	/*插入数据*/
+	for name, score := range data {
+		slist.Insert(name, score)
+	}
+
+	if slist.GetNodeCount() != len(data) {
+		return fmt.Sprintf("GetNodeCount failed")
+	}
+
+	for name, score := range data {
+		/*查找元素*/
+		if node := slist.Find(name); node == nil || node.Name() != name || int(node.Score()) != int(score) {
+			return fmt.Sprintf("Find failed, name=%s", name)
+		}
+		/*获取rank*/
+		rank, ok := slist.GetRank(name)
+		if !ok || rank != int(score) {
+			return fmt.Sprintf("GetRank failed, name=%s, rank=%d", name, rank)
+		}
+		/*根据rank查找*/
+		if node := slist.FindByRank(rank); node == nil || node.Name() != name {
+			return fmt.Sprintf("FindByRank wrong, name=%s, rank=%d", name, rank)
+		}
+		/*根据score查找*/
+		if node := slist.FindGreaterOrEqual(score); node == nil || node.Name() != name {
+			return fmt.Sprintf("FindGreaterOrEqual wrong, name=%s, rank=%d", name, rank)
+		}
+		/*获取score*/
+		if getScore, ok := slist.GetScore(name); !ok || int(getScore) != int(score) {
+			return fmt.Sprintf("GetScore wrong, name=%s, rank=%d", name, rank)
+		}
+	}
+
+	/*删除元素*/
+	for name := range data {
+		slist.Delete(name)
+		if slist.Find(name) != nil {
+			return fmt.Sprintf("Delete failed, name=%s", name)
+		}
+	}
+
+	if slist.GetNodeCount() != 0 {
+		return fmt.Sprintf("GetNodeCount failed")
+	}
+
+	return ""
+}
+
+func TestSkipList2(t *testing.T) {
 	sl := NewSeed(1)
 
 	sl.Insert("a10", 1)
@@ -97,53 +127,4 @@ func TestSkipList(t *testing.T) {
 		sl.Delete(name)
 	}
 	fmt.Println(sl.PrintNodes())
-}
-
-func TestSkipBench(t *testing.T) {
-	return
-
-	sl := New()
-	N := 100 * 10000
-
-	/*Init*/
-	st := time.Now()
-	datas := make(map[string]float64)
-	for i := 1; i <= N; i++ {
-		datas[strconv.Itoa(i)] = float64(i)
-	}
-	dur := time.Since(st)
-	fmt.Println("InitMap use "+dur.String()+", average ", dur.Seconds()*1000/float64(N), "ms")
-
-	/*Insert*/
-	st = time.Now()
-	for name, score := range datas {
-		sl.Insert(name, score)
-	}
-	dur = time.Since(st)
-	fmt.Println("Insert use "+dur.String()+", average ", dur.Seconds()*1000/float64(N), "ms")
-	fmt.Println(sl.PrintLevels())
-
-	/*Find*/
-	st = time.Now()
-	for name := range datas {
-		sl.Find(name)
-	}
-	dur = time.Since(st)
-	fmt.Println("Find use "+dur.String()+", average ", dur.Seconds()*1000/float64(N), "ms")
-
-	/*FindGreaterOrEqual*/
-	st = time.Now()
-	for _, score := range datas {
-		sl.FindGreaterOrEqual(score)
-	}
-	dur = time.Since(st)
-	fmt.Println("FindGreaterOrEqual use "+dur.String()+", average ", dur.Seconds()*1000/float64(N), "ms")
-
-	/*Delete*/
-	st = time.Now()
-	for name := range datas {
-		sl.Delete(name)
-	}
-	dur = time.Since(st)
-	fmt.Println("Delete use "+dur.String()+", average ", dur.Seconds()*1000/float64(N), "ms")
 }
